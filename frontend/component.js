@@ -118,10 +118,21 @@ function profitComparison(){
   });
   return `<div class="table-wrap" style="max-height:32rem;overflow:auto"><table><thead><tr><th>Şirket</th><th>Net kâr · ${E(state.previous)}</th><th>Net kâr · ${E(state.current)}</th><th>Kâr farkı (TL)</th><th>Değişim (%)</th><th>Özkaynak kârlılığı · ${E(state.previous)}</th><th>Özkaynak kârlılığı · ${E(state.current)}</th></tr></thead><tbody>${rows.join('')}</tbody></table></div><p class="caption">Önceki kâr sıfır veya negatifse değişim TL olarak gösterilir.</p>`;
 }
+function overviewPeers(){
+  const sectorRow=sector();
+  const ids=[...new Set([...state.compare,'1044'])];
+  const rows=ids.map(id=>{
+    const r=at(cur(),id,state.branch);
+    const total=at(cur(),id);
+    return `<tr><td>${E(companyName(id))}</td><td>${pct(metric(r,'ncr'))}</td><td>${pct(ratio(r?.gwp,total?.gwp))}</td><td>${pct(ratio(r?.gwp,sectorRow?.gwp))}</td></tr>`;
+  });
+  return card('Şirketlerin branş ve pazar payları',E(bn(state.branch))+' · '+E(cur().period.label),`<div class="table-wrap"><table><thead><tr><th>Şirket</th><th>Net bileşik rasyo</th><th>Branşın şirket primindeki payı</th><th>Şirketin branştaki pazar payı</th></tr></thead><tbody>${rows.join('')}</tbody></table></div><p class="caption">Paylar brüt yazılan prim üzerinden hesaplanır. Tüm hayat dışı seçiliyken branşın portföydeki payı %100 olur.</p>`,button('Şirket karşılaştırmasına git','compare','text-btn'));
+}
 function overview(){const r=sector(),p=oldSector(),g=growth(r?.gwp,p?.gwp),real=g!=null&&inflation()!=null?((1+g/100)/(1+inflation()/100)-1)*100:null;const bs=branches.map(b=>at(cur(),'9000',b)).filter(Boolean).sort((a,b)=>b.gwp-a.gwp),h=Object.values(state.cache).filter(d=>d.period.quarter===cur().period.quarter&&d.period.year<=cur().period.year).sort((a,b)=>a.period.year-b.period.year).map(d=>({label:`${d.period.year} · ${d.period.quarter*3} ay`,value:at(d,'9000',state.branch)?.gwp||0}));
 return `<section class="hero"><div><div class="eyebrow">YÖNETİCİ GÜNDEMİ <span>${cur().period.label}</span></div><h2>Büyümenin ötesinde,<br>kârlılığın kaynağına bakın.</h2><p>Net bileşik rasyo ${pct(metric(r,'ncr'))}. Yatırım geliri aktarımı hariç teknik sonuç <strong>${money(metric(r,'core'))} TL</strong>. ${metric(r,'core')<0?'Gündem: teknik denge ve getiri bağımlılığı.':'Gündem: teknik dengeyi koruyarak sürdürülebilir büyüme.'}</p>${button('Yönetim raporunu aç','report','hero-btn','report')}</div><div class="hero-stat"><span>REEL PRİM DEĞİŞİMİ</span><strong>${signed(real,'%')}</strong><p>${real==null?'Bu dönem eşleşmesi için hesaplanmadı.':`Nominal ${signed(g,'%')} · TÜFE ${pct(inflation())}`}</p><div class="hero-rule"></div><span>VERİ KAPSAMI</span><b>${companies().length} şirket <em>/</em> 18 ana branş</b></div></section>
 <div class="kpis">${['gwp','ncr','core','netProfit'].map(k=>kpi(k,r,p)).join('')}</div>
 <div class="grid two-one">${card('Prim üretiminin seyri','Aynı uzunluktaki kümülatif dönemler · milyar TL',chartBars(h))}${card('Teknik denge','Seçili branş · net bileşik rasyo', ratioSummary(),button('Ayrıntı','technical','text-btn'))}</div>
+${overviewPeers()}
 ${card('Şirketlerin kâr ve özkaynak karşılaştırması','Şirket geneli · tutarlar TL · özkaynak kârlılığı = dönem net kârı / dönem sonu özkaynak (yıllıklandırılmamış)',profitComparison())}
 <div class="section-line"><h2>Verinin söylediği</h2><span>Hesaplamaya dayalı yönetici yorumları</span></div>${comments(r,p)}
 <div class="grid equal">${card('Pazarın öncüleri','Brüt yazılan prim · ilk 7 şirket',progressBars(companies()),button('Karşılaştır','compare','text-btn'))}${card('Branşların portföy ağırlığı','18 ana branş · alt kırılımlar toplam dışı',progressBars(bs,{label:r=>bn(r.branch),limit:7}),button('Branşları incele','branches','text-btn'))}</div>`}
