@@ -32,9 +32,58 @@ def live_period(key):
     return tsb_client.load_period(tsb_client.get_period(key))
 
 
+@st.cache_data(ttl=21600, max_entries=60, show_spinner=False)
+def monthly_totals(period):
+    from datetime import date
+    import io
+    from openpyxl import load_workbook
+
+    month = date.fromisoformat(period + "-01")
+    saved = json.loads((ROOT / "data/monthly.json").read_text("utf-8"))
+    if saved["period"] == period:
+        return {name: rows[0][1] for name, rows in saved["tables"].items()}
+    params = dict(periodYear=month.year, periodMonth=month.month,
+                  statisticCategoryId=1, statisticSubCategoryId=1, statisticPeriodId=0)
+    files = []
+    page = 1
+    while True:
+        result = tsb_client._json("/Statistic/GetStatistics", {**params, "pageId": page})
+        rows = result.get("Result") or []
+        files.extend(rows)
+        if not rows or page * 10 >= result.get("TotalCount", 0):
+            break
+        page += 1
+    candidates = [f for f in files if f.get("PeriodYear") == month.year and
+                  f.get("PeriodMonth") == month.month and "prim üretimleri sıralama" in
+                  f.get("FileName", "").lower() and f["FilePath"].lower().endswith(".xlsx")]
+    if not candidates:
+        raise ValueError("Bu ay için TSB prim üretimi dosyası bulunamadı.")
+    source = max(candidates, key=lambda f: f.get("CreatedDate") or "")
+    book = load_workbook(io.BytesIO(tsb_client._read(tsb_client.TSB + source["FilePath"])),
+                         read_only=True, data_only=True)
+    try:
+        totals = {}
+        for sheet in list(book)[1:]:
+            rows = sheet.values
+            header = [next(rows, ()) for _ in range(6)]
+            if period not in header[4]:
+                continue
+            for row in rows:
+                if len(row) > 3 and row[1] == "SEKTÖR TOPLAMI":
+                    totals[sheet.title] = row[3]
+                    break
+        if not totals:
+            raise ValueError("Kaynakta dönem toplamı bulunamadı.")
+        return totals
+    finally:
+        book.close()
+
+
 def api(request):
     kind = request.get("kind")
     refresh = request.get("refresh") is True
+    if kind == "monthly":
+        return monthly_totals(request["period"])
     if kind == "catalog":
         try:
             if refresh:
@@ -99,19 +148,5 @@ dashboard = st.components.v2.component("sigorta_pusula", html='''
   <div id="app"><div class="boot"><h1>Sigorta Pusula</h1><p>TSB verileri hazırlanıyor…</p></div></div>
   <div id="toast" role="status" aria-live="polite"></div>
 ''', css=css, js=js, isolate_styles=True)
-monthly = json.loads((ROOT / "data/monthly.json").read_text("utf-8"))
-production, financial = st.tabs(["Aylık prim üretimi", "Üç aylık mali ve teknik göstergeler"])
-with production:
-    st.subheader(f"Yılbaşından {monthly['period']} sonuna kadar prim üretimi")
-    branch = st.selectbox("Branş veya sektör", monthly["tables"].keys())
-    table = []
-    for company, premium, prior, growth, share in monthly["tables"][branch]:
-        percent = lambda value: None if not isinstance(value, (int, float)) else round(value * 100, 4)
-        table.append({"Şirket": company, "Üretim (TL)": premium,
-                      "Geçen yıl aynı dönem (TL)": prior, "Büyüme (%)": percent(growth),
-                      "Pazar payı (%)": percent(share)})
-    st.dataframe(table, hide_index=True)
-    st.caption(f"TSB geçici üretim verileri · Kaynak revizyonu {monthly['source']['CreatedDate'][:10]}")
-with financial:
-    dashboard(key="pusula", data=dict(bootstrap=bootstrap(), reply=st.session_state.get("reply")),
-        on_request_change=receive_request, height="content")
+dashboard(key="pusula", data=dict(bootstrap=bootstrap(), reply=st.session_state.get("reply")),
+    on_request_change=receive_request, height="content")

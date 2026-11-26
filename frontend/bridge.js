@@ -24,7 +24,7 @@ export default function(component) {
   const fetch = async path => {
     if (path === '/api/bootstrap') return {ok:true, json:async () => base};
     const url = new URL(path, 'https://sigorta-pusula.local');
-    const kind = url.pathname === '/api/catalog' ? 'catalog' : url.pathname === '/api/data' ? 'data' : null;
+    const kind = url.pathname === '/api/monthly' ? 'monthly' : url.pathname === '/api/catalog' ? 'catalog' : url.pathname === '/api/data' ? 'data' : null;
     if (!kind) throw Error('Desteklenmeyen veri isteği.');
     return new Promise((resolve,reject) => {
       const request = {id:crypto.randomUUID(),kind,period:url.searchParams.get('period'),refresh:url.searchParams.get('refresh')==='1'};

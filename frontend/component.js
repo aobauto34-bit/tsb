@@ -24,7 +24,7 @@ export default function(component) {
   const fetch = async path => {
     if (path === '/api/bootstrap') return {ok:true, json:async () => base};
     const url = new URL(path, 'https://sigorta-pusula.local');
-    const kind = url.pathname === '/api/catalog' ? 'catalog' : url.pathname === '/api/data' ? 'data' : null;
+    const kind = url.pathname === '/api/monthly' ? 'monthly' : url.pathname === '/api/catalog' ? 'catalog' : url.pathname === '/api/data' ? 'data' : null;
     if (!kind) throw Error('Desteklenmeyen veri isteği.');
     return new Promise((resolve,reject) => {
       const request = {id:crypto.randomUUID(),kind,period:url.searchParams.get('period'),refresh:url.searchParams.get('refresh')==='1'};
@@ -128,10 +128,47 @@ function overviewPeers(){
   });
   return card('Şirketlerin branş ve pazar payları',E(bn(state.branch))+' · '+E(cur().period.label),`<div class="table-wrap"><table><thead><tr><th>Şirket</th><th>Net bileşik rasyo</th><th>Branşın şirket primindeki payı</th><th>Şirketin branştaki pazar payı</th></tr></thead><tbody>${rows.join('')}</tbody></table></div><p class="caption">Paylar brüt yazılan prim üzerinden hesaplanır. Tüm hayat dışı seçiliyken branşın portföydeki payı %100 olur.</p>`,button('Şirket karşılaştırmasına git','compare','text-btn'));
 }
+const premiumMonths = new Map();
+let premiumOpen = false;
+let premiumLoading = false;
+function premiumTable(){
+  if(!premiumOpen) return button('Ay ay gelişim','premium-months','text-btn');
+  const year=cur().period.year;
+  const normalize=s=>s.toLocaleUpperCase('tr-TR').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Z0-9]/g,'');
+  const lines=Array.from({length:premiumLimit(year)},(_,i)=>{
+    const key=year+'-'+String(i+1).padStart(2,'0');
+    const get=k=>Object.entries(premiumMonths.get(k)||{}).find(([b])=>normalize(b)===normalize(state.branch))?.[1];
+    const total=get(key),prev=i?get(year+'-'+String(i).padStart(2,'0')):0;
+    return '<tr><td>'+new Intl.DateTimeFormat('tr-TR',{month:'long'}).format(new Date(year,i,1))+'</td><td>'+(Number.isFinite(total)&&Number.isFinite(prev)?num(total-prev,0):'—')+'</td><td>'+(Number.isFinite(total)?num(total,0):'—')+'</td></tr>';
+  }).join('');
+  return button('Ay ay gelişimi kapat','premium-months','text-btn')+'<h4>'+year+' · Ay ay prim üretimi</h4><table><thead><tr><th>Ay</th><th>Aylık prim (TL)</th><th>Kümülatif prim (TL)</th></tr></thead><tbody>'+lines+'</tbody></table><small>'+(premiumLoading?'TSB verileri yükleniyor…':'— İlgili dönem verisi alınamadı.')+'</small>';
+}
+function premiumLimit(year){
+  const now=new Date();
+  return year===now.getFullYear()?Math.max(0,now.getMonth()):12;
+}
+async function togglePremium(){
+  premiumOpen=!premiumOpen;
+  render();
+  if(!premiumOpen||premiumLoading)return;
+  const year=cur().period.year;
+  premiumLoading=true;
+  try{
+    for(let month=premiumLimit(year);month>=1&&premiumOpen&&cur().period.year===year;month--){
+      const key=year+'-'+String(month).padStart(2,'0');
+      if(premiumMonths.has(key))continue;
+      try{
+        const response=await fetch('/api/monthly?period='+key);
+        if(response.ok) premiumMonths.set(key,await response.json());
+      }catch{}
+      render();
+    }
+  }finally{premiumLoading=false;render();}
+}
 function overview(){const r=sector(),p=oldSector(),g=growth(r?.gwp,p?.gwp),real=g!=null&&inflation()!=null?((1+g/100)/(1+inflation()/100)-1)*100:null;const bs=branches.map(b=>at(cur(),'9000',b)).filter(Boolean).sort((a,b)=>b.gwp-a.gwp),h=Object.values(state.cache).filter(d=>d.period.quarter===cur().period.quarter&&d.period.year<=cur().period.year).sort((a,b)=>a.period.year-b.period.year).map(d=>({label:`${d.period.year} · ${d.period.quarter*3} ay`,value:at(d,'9000',state.branch)?.gwp||0}));
 return `<section class="hero"><div><div class="eyebrow">YÖNETİCİ GÜNDEMİ <span>${cur().period.label}</span></div><h2>Büyümenin ötesinde,<br>kârlılığın kaynağına bakın.</h2><p>Net bileşik rasyo ${pct(metric(r,'ncr'))}. Yatırım geliri aktarımı hariç teknik sonuç <strong>${money(metric(r,'core'))} TL</strong>. ${metric(r,'core')<0?'Gündem: teknik denge ve getiri bağımlılığı.':'Gündem: teknik dengeyi koruyarak sürdürülebilir büyüme.'}</p>${button('Yönetim raporunu aç','report','hero-btn','report')}</div><div class="hero-stat"><span>REEL PRİM DEĞİŞİMİ</span><strong>${signed(real,'%')}</strong><p>${real==null?'Bu dönem eşleşmesi için hesaplanmadı.':`Nominal ${signed(g,'%')} · TÜFE ${pct(inflation())}`}</p><div class="hero-rule"></div><span>VERİ KAPSAMI</span><b>${companies().length} şirket <em>/</em> 18 ana branş</b></div></section>
 <div class="kpis">${['gwp','ncr','core','netProfit'].map(k=>kpi(k,r,p)).join('')}</div>
-<div class="grid two-one">${card('Prim üretiminin seyri','Aynı uzunluktaki kümülatif dönemler · milyar TL',chartBars(h))}${card('Teknik denge','Seçili branş · net bileşik rasyo', ratioSummary(),button('Ayrıntı','technical','text-btn'))}</div>
+<div class="grid two-one">${card('Prim üretiminin seyri','Aynı uzunluktaki kümülatif dönemler · milyar TL',chartBars(h)+premiumTable())}${card('Teknik denge','Seçili branş · net bileşik rasyo', ratioSummary(),button('Ayrıntı','technical','text-btn'))}</div>
 ${overviewPeers()}
 ${card('Şirketlerin kâr ve özkaynak karşılaştırması','Şirket geneli · tutarlar TL · özkaynak kârlılığı = dönem net kârı / dönem sonu özkaynak (yıllıklandırılmamış)',profitComparison())}
 <div class="section-line"><h2>Verinin söylediği</h2><span>Hesaplamaya dayalı yönetici yorumları</span></div>${comments(r,p)}
@@ -168,7 +205,7 @@ function csv(){
  table=table.map((row,i)=>[...row,i===0?'Veri alım zamanı':cur().fetchedAt,i===0?'Kaynak':'Türkiye Sigorta Birliği']);
  const output=table.map(r=>r.map(quote).join(';')).join('\r\n');const a=document.createElement('a'),u=URL.createObjectURL(new Blob(['\ufeff'+output],{type:'text/csv;charset=utf-8'}));a.href=u;a.download='Sigorta_Pusula_'+state.page+'_'+state.current+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);toast('CSV raporu indirildi. Tutarlar TL, oranlar yüzde değeridir.');
 }
-document.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.page){state.page=b.dataset.page;state.search='';state.mobile=false;render();scrollTop();return;}if(b.dataset.company){state.company=b.dataset.company;state.page='company';render();scrollTop();return;}if(b.dataset.info){toast(metrics[b.dataset.info][2]);return;}if(b.dataset.sort){state.descending=state.sort===b.dataset.sort?!state.descending:true;state.sort=b.dataset.sort;render();return;}if(b.dataset.remove){if(state.compare.length<=1){toast('En az bir şirket seçili kalmalı.');return;}state.compare=state.compare.filter(x=>x!==b.dataset.remove);render();return;}switch(b.dataset.action){case'refresh':if(state.loading)return;state.loading=true;render();try{const c=await fetch('/api/catalog?refresh=1').then(r=>r.json());state.catalog=c.periods;state.catalogStatus=c.status;await fetchData(state.current,true);if(state.previous!==state.current)await fetchData(state.previous,true);state.status=cur().error||'TSB kaynakları yeniden okundu.';toast(cur().status==='live'?'TSB verileri güncellendi.':'Kaynağa erişilemedi; son doğrulanmış kayıt gösteriliyor.');}catch(e){toast(e.message);}state.loading=false;render();break;case'choose':state.modal=true;render();$('#modal-search')?.focus();break;case'close':state.modal=false;render();break;case'menu':state.mobile=!state.mobile;render();break;case'csv':csv();break;case'print':window.print();break;case'base':state.scenario=[0,0,0,0];render();break;case'claims':state.scenario=[0,15,0,0];render();break;case'yield':state.scenario=[0,5,0,-30];render();break;default:if(nav.some(n=>n[0]===b.dataset.action)){state.page=b.dataset.action;render();scrollTop();}}});
+document.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.page){state.page=b.dataset.page;state.search='';state.mobile=false;render();scrollTop();return;}if(b.dataset.company){state.company=b.dataset.company;state.page='company';render();scrollTop();return;}if(b.dataset.info){toast(metrics[b.dataset.info][2]);return;}if(b.dataset.sort){state.descending=state.sort===b.dataset.sort?!state.descending:true;state.sort=b.dataset.sort;render();return;}if(b.dataset.remove){if(state.compare.length<=1){toast('En az bir şirket seçili kalmalı.');return;}state.compare=state.compare.filter(x=>x!==b.dataset.remove);render();return;}switch(b.dataset.action){case'premium-months':await togglePremium();break;case'refresh':if(state.loading)return;state.loading=true;render();try{const c=await fetch('/api/catalog?refresh=1').then(r=>r.json());state.catalog=c.periods;state.catalogStatus=c.status;await fetchData(state.current,true);if(state.previous!==state.current)await fetchData(state.previous,true);state.status=cur().error||'TSB kaynakları yeniden okundu.';toast(cur().status==='live'?'TSB verileri güncellendi.':'Kaynağa erişilemedi; son doğrulanmış kayıt gösteriliyor.');}catch(e){toast(e.message);}state.loading=false;render();break;case'choose':state.modal=true;render();$('#modal-search')?.focus();break;case'close':state.modal=false;render();break;case'menu':state.mobile=!state.mobile;render();break;case'csv':csv();break;case'print':window.print();break;case'base':state.scenario=[0,0,0,0];render();break;case'claims':state.scenario=[0,15,0,0];render();break;case'yield':state.scenario=[0,5,0,-30];render();break;default:if(nav.some(n=>n[0]===b.dataset.action)){state.page=b.dataset.action;render();scrollTop();}}});
 document.addEventListener('change',e=>{const el=e.target;if(el.id==='period')changePeriod(el.value);if(el.id==='previous')changePeriod(el.value,true);if(el.id==='branch'){state.branch=el.value;render();}if(el.id==='company'){state.company=el.value;render();}if(el.id==='table-metric'){state.tableMetric=el.value;state.sort=el.value;render();}if(el.dataset.compare){if(el.checked&&state.compare.length>=5){el.checked=false;toast('En fazla 5 şirket seçebilirsiniz.');return;}if(!el.checked&&state.compare.length===1){el.checked=true;toast('En az bir şirket seçin.');return;}state.compare=el.checked?[...state.compare,el.dataset.compare]:state.compare.filter(id=>id!==el.dataset.compare);const pos=$('.company-options').scrollTop;render();$('.company-options').scrollTop=pos;}if(el.dataset.slider!==undefined){state.scenario[Number(el.dataset.slider)]=Number(el.value);render();}});
 document.addEventListener('input',e=>{const el=e.target;if(el.id==='table-search'){state.search=el.value;const pos=el.selectionStart;render();$('#table-search')?.focus();}if(el.id==='modal-search')$$('.company-options label').forEach(l=>l.hidden=!l.dataset.name.includes(el.value.toLocaleLowerCase('tr')));if(el.dataset.slider!==undefined){state.scenario[Number(el.dataset.slider)]=Number(el.value);$('#sv'+el.dataset.slider).textContent=signed(Number(el.value),'%');$('#scenario-results').innerHTML=scenarioResults(at(cur(),state.company,state.branch),scenario(at(cur(),state.company,state.branch),...state.scenario));}});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&state.modal){state.modal=false;render();}});
