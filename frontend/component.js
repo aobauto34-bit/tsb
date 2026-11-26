@@ -149,7 +149,7 @@ async function loadMonth(key,refresh=false){
 }
 function monthlyPlot(rows,field,label){
   const values=rows.map(r=>r[field]).filter(Number.isFinite);
-  if(!values.length)return card(label,'','<p class="empty">'+(rows.some(r=>r.loading)?'TSB verileri yükleniyor…':field==='adet'?'Bu seçim için aylık poliçe sayısı alınamadı. TSB aylık Prim-Adet tablolarındaki alt branş teminat adedi farklı bir ölçüdür.':'Bu seçim için aylık prim verisi alınamadı.')+'</p>');
+  if(!values.length)return card(label,'','<p class="empty">'+(rows.some(r=>r.loading)?'TSB verileri yükleniyor…':field==='adet'?'Bu seçim için aylık alt branş teminat adedi alınamadı.':'Bu seçim için aylık prim verisi alınamadı.')+'</p>');
   const lo=Math.min(0,...values),hi=Math.max(0,...values),scale=v=>155-(v-lo)/(hi-lo||1)*125;
   const bars=rows.map((r,i)=>{
     const x=65+i*(600/rows.length),w=Math.min(32,370/rows.length);
@@ -157,6 +157,43 @@ function monthlyPlot(rows,field,label){
     return (Number.isFinite(v)?'<rect x="'+(x-w/2)+'" y="'+Math.min(scale(0),y)+'" width="'+w+'" height="'+Math.max(1,Math.abs(scale(0)-y))+'" fill="#146d5a"><title>'+r.label+' · '+num(v,0)+'</title></rect>':'')+'<text x="'+x+'" y="180" text-anchor="middle">'+r.label.slice(0,3)+'</text>';
   }).join('');
   return card(label,'','<svg class="chart" viewBox="0 0 700 195" role="img" aria-label="'+label+'"><text x="3" y="18">'+num(hi,0)+'</text><line x1="44" x2="685" y1="'+scale(0)+'" y2="'+scale(0)+'" stroke="#ccd6d1"/>'+bars+'</svg>');
+}
+const companyMetrics={Trafik:'premiums',Kasko:'premiums'};
+function monthlyChange(keys,i,field,branch,company){
+  const read=key=>monthlyCache.get(key)?.[field]?.[branch]?.[company];
+  const current=read(keys[i]), previous=i?read(keys[i-1]):0;
+  return Number.isFinite(current)&&Number.isFinite(previous)?current-previous:null;
+}
+function companyLines(keys,branch){
+  const field=companyMetrics[branch], unit=field==='counts'?'Teminat adedi':'Prim (TL)';
+  const selector=select('lines-'+branch,'Gösterge',[['premiums','Prim (TL)'],['counts','Alt branş teminat adedi']],field);
+  const names=new Set();
+  keys.forEach(k=>Object.keys(monthlyCache.get(k)?.[field]?.[branch]||{}).forEach(n=>names.add(n)));
+  names.delete('SEKTÖR TOPLAMI');
+  const series=[...names].sort((a,b)=>a.localeCompare(b,'tr')).map(name=>({name,values:keys.map((_,i)=>monthlyChange(keys,i,field,branch,name))}));
+  const values=series.flatMap(s=>s.values).filter(Number.isFinite);
+  const title=branch+' · Tüm şirketlerin aylık gelişimi';
+  if(!values.length)return card(title,unit,selector+'<p class="empty">'+(keys.some(k=>inFlight.has(k))?'TSB verileri yükleniyor…':'Seçilen dönem için şirket verisi bulunamadı.')+'</p>');
+  const min=Math.min(0,...values),max=Math.max(0,...values);
+  const x=i=>105+i*715/Math.max(1,keys.length-1), y=v=>232-(v-min)/(max-min||1)*200;
+  const ticks=Array.from({length:5},(_,i)=>{
+    const v=min+(max-min)*i/4;
+    return '<line x1="100" x2="830" y1="'+y(v)+'" y2="'+y(v)+'" stroke="#dfe6e3"/><text x="95" y="'+(y(v)+4)+'" text-anchor="end">'+num(v,0)+'</text>';
+  }).join('');
+  const months=keys.map((k,i)=>'<text x="'+x(i)+'" y="252" text-anchor="middle">'+new Intl.DateTimeFormat('tr-TR',{month:'short'}).format(new Date(+k.slice(0,4),i,1))+'</text>').join('');
+  let lines='',legend='';
+  series.forEach(({name,values},idx)=>{
+    const color='hsl('+Math.round(idx*137.508)%360+',64%,'+(35+idx%3*8)+'%)';
+    let d='',points='',connected=false;
+    values.forEach((v,i)=>{
+      if(!Number.isFinite(v)){connected=false;return;}
+      d+=(connected?'L':'M')+x(i)+' '+y(v)+' ';connected=true;
+      points+='<circle cx="'+x(i)+'" cy="'+y(v)+'" r="2.8" fill="'+color+'"><title>'+E(name)+' · '+keys[i]+' · '+num(v,0)+' '+unit+'</title></circle>';
+    });
+    lines+='<path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="1.8"><title>'+E(name)+'</title></path>'+points;
+    legend+='<span style="display:inline-flex;align-items:center;gap:4px;margin:2px 12px 2px 0"><i style="width:12px;height:3px;background:'+color+'"></i>'+E(name)+'</span>';
+  });
+  return card(title,unit,selector+'<svg class="chart" role="img" aria-label="'+title+' '+unit+'" viewBox="0 0 850 265">'+ticks+months+lines+'</svg><div style="font-size:12px">'+legend+'</div>');
 }
 function productionPage(){
   const keys=monthKeys();
@@ -170,16 +207,12 @@ function productionPage(){
   const pairs=items=>Array.from(items).sort((a,b)=>a.localeCompare(b,'tr')).map(x=>[x,x]);
   const filters='<div class="filters"><label class="select-field"><span>Son ay</span><input type="month" id="production-period" min="2015-01" max="'+newestMonth+'" value="'+productionPeriod+'"></label>'+select('production-branch','Branş',pairs(branches),productionBranch)+select('production-company','Şirket',[['SEKTÖR TOPLAMI','Sektör toplamı'],...pairs(companies).filter(x=>x[0]!=='SEKTÖR TOPLAMI')],productionCompany)+'</div>';
   const rows=keys.map((key,i)=>{
-    const value=field=>{
-      const get=k=>monthlyCache.get(k)?.[field]?.[productionBranch]?.[productionCompany];
-      const current=get(key),prior=i?get(keys[i-1]):0;
-      return Number.isFinite(current)&&Number.isFinite(prior)?current-prior:null;
-    };
+    const value=field=>monthlyChange(keys,i,field,productionBranch,productionCompany);
     const label=new Intl.DateTimeFormat('tr-TR',{month:'long'}).format(new Date(Number(key.slice(0,4)),i,1));
     return {label,prim:value('premiums'),adet:value('counts'),loading:inFlight.has(key)||(i>0&&inFlight.has(keys[i-1]))};
   });
   const cells=rows.map(r=>'<tr><td>'+r.label+'</td>'+['prim','adet'].map(f=>'<td>'+(Number.isFinite(r[f])?num(r[f],0):r.loading?'…':'—')+'</td>').join('')+'</tr>').join('');
-  return filters+card('Aylık prim ve poliçe adedi',productionPeriod.slice(0,4),'<table><thead><tr><th>Ay</th><th>Yazılan prim (TL)</th><th>Poliçe adedi</th></tr></thead><tbody>'+cells+'</tbody></table><small>— Aylık hesaplama için kaynak veri eksik.</small>')+'<div class="grid two-one">'+monthlyPlot(rows,'prim','Aylık prim (TL)')+monthlyPlot(rows,'adet','Aylık poliçe adedi')+'</div>';
+  return filters+card('Aylık prim ve alt branş teminat adedi',productionPeriod.slice(0,4),'<table><thead><tr><th>Ay</th><th>Yazılan prim (TL)</th><th>Alt branş teminat adedi</th></tr></thead><tbody>'+cells+'</tbody></table><small>— Aylık hesaplama için kaynak veri eksik.</small>')+'<div class="grid two-one">'+monthlyPlot(rows,'prim','Aylık prim (TL)')+monthlyPlot(rows,'adet','Aylık alt branş teminat adedi')+'</div>'+companyLines(keys,'Trafik')+companyLines(keys,'Kasko');
 }
 function overview(){const r=sector(),p=oldSector(),g=growth(r?.gwp,p?.gwp),real=g!=null&&inflation()!=null?((1+g/100)/(1+inflation()/100)-1)*100:null;const bs=branches.map(b=>at(cur(),'9000',b)).filter(Boolean).sort((a,b)=>b.gwp-a.gwp),h=Object.values(state.cache).filter(d=>d.period.quarter===cur().period.quarter&&d.period.year<=cur().period.year).sort((a,b)=>a.period.year-b.period.year).map(d=>({label:`${d.period.year} · ${d.period.quarter*3} ay`,value:at(d,'9000',state.branch)?.gwp||0}));
 return `<section class="hero"><div><div class="eyebrow">YÖNETİCİ GÜNDEMİ <span>${cur().period.label}</span></div><h2>Büyümenin ötesinde,<br>kârlılığın kaynağına bakın.</h2><p>Net bileşik rasyo ${pct(metric(r,'ncr'))}. Yatırım geliri aktarımı hariç teknik sonuç <strong>${money(metric(r,'core'))} TL</strong>. ${metric(r,'core')<0?'Gündem: teknik denge ve getiri bağımlılığı.':'Gündem: teknik dengeyi koruyarak sürdürülebilir büyüme.'}</p>${button('Yönetim raporunu aç','report','hero-btn','report')}</div><div class="hero-stat"><span>REEL PRİM DEĞİŞİMİ</span><strong>${signed(real,'%')}</strong><p>${real==null?'Bu dönem eşleşmesi için hesaplanmadı.':`Nominal ${signed(g,'%')} · TÜFE ${pct(inflation())}`}</p><div class="hero-rule"></div><span>VERİ KAPSAMI</span><b>${companies().length} şirket <em>/</em> 18 ana branş</b></div></section>
@@ -222,7 +255,7 @@ function csv(){
  const output=table.map(r=>r.map(quote).join(';')).join('\r\n');const a=document.createElement('a'),u=URL.createObjectURL(new Blob(['\ufeff'+output],{type:'text/csv;charset=utf-8'}));a.href=u;a.download='Sigorta_Pusula_'+state.page+'_'+state.current+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);toast('CSV raporu indirildi. Tutarlar TL, oranlar yüzde değeridir.');
 }
 document.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.page){state.page=b.dataset.page;state.search='';state.mobile=false;render();scrollTop();return;}if(b.dataset.company){state.company=b.dataset.company;state.page='company';render();scrollTop();return;}if(b.dataset.info){toast(metrics[b.dataset.info][2]);return;}if(b.dataset.sort){state.descending=state.sort===b.dataset.sort?!state.descending:true;state.sort=b.dataset.sort;render();return;}if(b.dataset.remove){if(state.compare.length<=1){toast('En az bir şirket seçili kalmalı.');return;}state.compare=state.compare.filter(x=>x!==b.dataset.remove);render();return;}switch(b.dataset.action){case'refresh':if(state.page==='production'){monthKeys().forEach(k=>loadMonth(k,true));render();break;}if(state.loading)return;state.loading=true;render();try{const c=await fetch('/api/catalog?refresh=1').then(r=>r.json());state.catalog=c.periods;state.catalogStatus=c.status;await fetchData(state.current,true);if(state.previous!==state.current)await fetchData(state.previous,true);state.status=cur().error||'TSB kaynakları yeniden okundu.';toast(cur().status==='live'?'TSB verileri güncellendi.':'Kaynağa erişilemedi; son doğrulanmış kayıt gösteriliyor.');}catch(e){toast(e.message);}state.loading=false;render();break;case'choose':state.modal=true;render();$('#modal-search')?.focus();break;case'close':state.modal=false;render();break;case'menu':state.mobile=!state.mobile;render();break;case'csv':csv();break;case'print':window.print();break;case'base':state.scenario=[0,0,0,0];render();break;case'claims':state.scenario=[0,15,0,0];render();break;case'yield':state.scenario=[0,5,0,-30];render();break;default:if(nav.some(n=>n[0]===b.dataset.action)){state.page=b.dataset.action;render();scrollTop();}}});
-document.addEventListener('change',e=>{const el=e.target;if(el.id==='production-period'){if(/^\d{4}-(0[1-9]|1[0-2])$/.test(el.value)&&el.value>='2015-01'&&el.value<=newestMonth){productionPeriod=el.value;}render();return;}if(el.id==='production-company'){productionCompany=el.value;render();return;}if(el.id==='production-branch'){productionBranch=el.value;productionCompany='SEKTÖR TOPLAMI';render();return;}if(el.id==='period')changePeriod(el.value);if(el.id==='previous')changePeriod(el.value,true);if(el.id==='branch'){state.branch=el.value;render();}if(el.id==='company'){state.company=el.value;render();}if(el.id==='table-metric'){state.tableMetric=el.value;state.sort=el.value;render();}if(el.dataset.compare){if(el.checked&&state.compare.length>=5){el.checked=false;toast('En fazla 5 şirket seçebilirsiniz.');return;}if(!el.checked&&state.compare.length===1){el.checked=true;toast('En az bir şirket seçin.');return;}state.compare=el.checked?[...state.compare,el.dataset.compare]:state.compare.filter(id=>id!==el.dataset.compare);const pos=$('.company-options').scrollTop;render();$('.company-options').scrollTop=pos;}if(el.dataset.slider!==undefined){state.scenario[Number(el.dataset.slider)]=Number(el.value);render();}});
+document.addEventListener('change',e=>{const el=e.target;if(el.id==='lines-Trafik'||el.id==='lines-Kasko'){companyMetrics[el.id.slice(6)]=el.value;render();return;}if(el.id==='production-period'){if(/^\d{4}-(0[1-9]|1[0-2])$/.test(el.value)&&el.value>='2015-01'&&el.value<=newestMonth){productionPeriod=el.value;}render();return;}if(el.id==='production-company'){productionCompany=el.value;render();return;}if(el.id==='production-branch'){productionBranch=el.value;productionCompany='SEKTÖR TOPLAMI';render();return;}if(el.id==='period')changePeriod(el.value);if(el.id==='previous')changePeriod(el.value,true);if(el.id==='branch'){state.branch=el.value;render();}if(el.id==='company'){state.company=el.value;render();}if(el.id==='table-metric'){state.tableMetric=el.value;state.sort=el.value;render();}if(el.dataset.compare){if(el.checked&&state.compare.length>=5){el.checked=false;toast('En fazla 5 şirket seçebilirsiniz.');return;}if(!el.checked&&state.compare.length===1){el.checked=true;toast('En az bir şirket seçin.');return;}state.compare=el.checked?[...state.compare,el.dataset.compare]:state.compare.filter(id=>id!==el.dataset.compare);const pos=$('.company-options').scrollTop;render();$('.company-options').scrollTop=pos;}if(el.dataset.slider!==undefined){state.scenario[Number(el.dataset.slider)]=Number(el.value);render();}});
 document.addEventListener('input',e=>{const el=e.target;if(el.id==='table-search'){state.search=el.value;const pos=el.selectionStart;render();$('#table-search')?.focus();}if(el.id==='modal-search')$$('.company-options label').forEach(l=>l.hidden=!l.dataset.name.includes(el.value.toLocaleLowerCase('tr')));if(el.dataset.slider!==undefined){state.scenario[Number(el.dataset.slider)]=Number(el.value);$('#sv'+el.dataset.slider).textContent=signed(Number(el.value),'%');$('#scenario-results').innerHTML=scenarioResults(at(cur(),state.company,state.branch),scenario(at(cur(),state.company,state.branch),...state.scenario));}});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&state.modal){state.modal=false;render();}});
 async function init(){try{const base=await fetch('/api/bootstrap').then(r=>r.json());monthlyOptions=base.monthlyOptions||{};state.catalog=base.periods;state.cache=base.data;state.current=base.latest;const p=state.catalog.find(p=>p.key===state.current);state.previous=state.cache[`${p.year-1}Q${p.quarter}`]?`${p.year-1}Q${p.quarter}`:state.current;state.page=nav.some(n=>n[0]===location.hash.slice(1))?location.hash.slice(1):'overview';state.status='Başlangıçta son doğrulanmış TSB kaydı yüklendi. Güncel katalog kontrol ediliyor.';render();const c=await fetch('/api/catalog').then(r=>r.json());state.catalog=c.periods;state.catalogStatus=c.status;const latest=c.periods[0];if(latest){if(latest.key!==state.current){await changePeriod(latest.key);}else{await fetchData(state.current);await fetchData(state.previous);}}state.status=cur().error||'TSB katalog kontrolü ve seçili dönem kaynak okuması tamamlandı.';render();}catch(e){if(cur()){state.status='TSB bağlantısı kurulamadı. Son doğrulanmış kayıt kullanılıyor.';render();}else{$('#app').innerHTML=`<div class="boot"><h1>Veriler yüklenemedi</h1><p>${E(e.message)}</p><button onclick="location.reload()">Yeniden dene</button></div>`;}}}
