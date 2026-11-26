@@ -40,14 +40,18 @@ def monthly_totals(period):
 
     month = date.fromisoformat(period + "-01")
     saved = json.loads((ROOT / "data/monthly.json").read_text("utf-8"))
-    if saved["period"] == period:
-        return {name: rows[0][1] for name, rows in saved["tables"].items()}
+    premiums = {name: rows[0][1] for name, rows in saved["tables"].items()} if saved["period"] == period else {}
     params = dict(periodYear=month.year, periodMonth=month.month,
                   statisticCategoryId=1, statisticSubCategoryId=1, statisticPeriodId=0)
     files = []
     page = 1
     while True:
-        result = tsb_client._json("/Statistic/GetStatistics", {**params, "pageId": page})
+        try:
+            result = tsb_client._json("/Statistic/GetStatistics", {**params, "pageId": page})
+        except Exception:
+            if premiums:
+                return dict(premiums=premiums, counts={})
+            raise
         rows = result.get("Result") or []
         files.extend(rows)
         if not rows or page * 10 >= result.get("TotalCount", 0):
@@ -56,27 +60,40 @@ def monthly_totals(period):
     candidates = [f for f in files if f.get("PeriodYear") == month.year and
                   f.get("PeriodMonth") == month.month and "prim üretimleri sıralama" in
                   f.get("FileName", "").lower() and f["FilePath"].lower().endswith(".xlsx")]
-    if not candidates:
-        raise ValueError("Bu ay için TSB prim üretimi dosyası bulunamadı.")
-    source = max(candidates, key=lambda f: f.get("CreatedDate") or "")
-    book = load_workbook(io.BytesIO(tsb_client._read(tsb_client.TSB + source["FilePath"])),
-                         read_only=True, data_only=True)
-    try:
+    def read_totals(source, counts=False):
+        book = load_workbook(io.BytesIO(tsb_client._read(tsb_client.TSB + source["FilePath"])),
+                             read_only=True, data_only=True)
         totals = {}
-        for sheet in list(book)[1:]:
-            rows = sheet.values
-            header = [next(rows, ()) for _ in range(6)]
-            if period not in header[4]:
-                continue
-            for row in rows:
-                if len(row) > 3 and row[1] == "SEKTÖR TOPLAMI":
-                    totals[sheet.title] = row[3]
+        try:
+            for sheet in book:
+                rows = iter(sheet.values)
+                headers = [next(rows, ()) for _ in range(12)]
+                # Locate the current period in the workbook, including merged group headers.
+                columns = [i for row in headers for i, cell in enumerate(row) if cell == period]
+                if not columns:
+                    continue
+                col = columns[0]
+                from itertools import chain
+                for row in chain(headers, rows):
+                    if "SEKTÖR TOPLAMI" not in row or col >= len(row):
+                        continue
+                    value = row[col]
+                    if isinstance(value, (float, int)) and (not counts or int(value) == value):
+                        totals[sheet.title] = value
                     break
-        if not totals:
-            raise ValueError("Kaynakta dönem toplamı bulunamadı.")
-        return totals
-    finally:
-        book.close()
+            return totals
+        finally:
+            book.close()
+
+    if not premiums and candidates:
+        premiums = read_totals(max(candidates, key=lambda f: f.get("CreatedDate") or ""))
+    counts = {}
+    count_files = [f for f in files if f.get("PeriodYear") == month.year and
+                   f.get("PeriodMonth") == month.month and "poliçe adet" in
+                   f.get("FileName", "").lower() and f.get("FilePath", "").lower().endswith(".xlsx")]
+    if count_files:
+        counts = read_totals(max(count_files, key=lambda f: f.get("CreatedDate") or ""), counts=True)
+    return dict(premiums=premiums, counts=counts)
 
 
 def api(request):
