@@ -116,6 +116,17 @@ def monthly_totals(period):
     known_companies.update({folded(name): name for rows in premiums.values() for name in rows})
     known_companies.update({label: "SEKTÖR TOPLAMI" for label in ("toplam", "sektor toplami", "genel toplam")})
 
+    import math
+    def coverage_number(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+    branch_names.update({"hayat disi branslar": "Hayatdışı", "hayat branslari": "Hayat",
+                         "motorlu kara tasitlari kasko": "Kasko",
+                         "zorunlu trafik (yesil kart haric)": "Trafik", "genel toplam": "Genel Toplam"})
+    def branch_label(value):
+        label = " ".join(folded(value).replace("–", " ").replace("—", " ").split())
+        return branch_names.get(label) or branch_names.get(label.removesuffix(" toplam"))
+
     def read_coverage(source):
         content = tsb_client._read(tsb_client.TSB + source["FilePath"])
         book = load_workbook(io.BytesIO(content), data_only=True)
@@ -134,6 +145,30 @@ def monthly_totals(period):
                     for r in range(area.min_row-1, min(area.max_row, len(header))):
                         for c in range(area.min_col-1, area.max_col):
                             header[r][c] = value
+                # Some sheets put branches down the rows and companies across the columns.
+                for idx,row in enumerate(rows):
+                    branch = next((b for cell in row[:4] if isinstance(cell,str)
+                                   and (b := branch_label(cell))), None)
+                    if not branch or not any(coverage_number(v) for v in row):
+                        continue
+                    by_company = {}
+                    for col,value in enumerate(row):
+                        if not coverage_number(value):
+                            continue
+                        labels = [folded(h[col]) for h in header[:idx] if isinstance(h[col],str)]
+                        measures = [label for label in labels if "sigortali" in label or
+                                    ("teminat" in label and ("adet" in label or "adedi" in label))]
+                        if not measures or "sigortali" in measures[-1]:
+                            continue
+                        company = next((known_companies[l] for l in reversed(labels)
+                                        if l in known_companies and known_companies[l]!="SEKTÖR TOPLAMI"), None)
+                        if not company and folded(sheet.title)=="genel":
+                            company = "SEKTÖR TOPLAMI"
+                        if company:
+                            by_company.setdefault(company, []).append(value)
+                    for company, numbers in by_company.items():
+                        if len(numbers)==1:
+                            counts.setdefault(branch, {})[company] = numbers[0]
                 name_col = next((c for row in header for c, cell in enumerate(row[:5])
                                  if folded(cell) in {"sirket adi", "sirket unvani", "sirket", "sirketler"}), None)
                 first = next((i for i,row in enumerate(rows)
@@ -167,11 +202,11 @@ def monthly_totals(period):
                         if not company and name_col is not None and isinstance(row[name_col], str) and isinstance(row[0], int):
                             company = row[name_col].strip()
                         value = row[cols[0]]
-                        if company and isinstance(value,(float,int)) and int(value)==value:
+                        if company and coverage_number(value):
                             if company in values and values[company]!=value:
                                 values = {}
                                 break
-                            values[company] = int(value)
+                            values[company] = value
                     if values:
                         counts.setdefault(branch, {}).update(values)
         finally:
