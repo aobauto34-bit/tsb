@@ -72,7 +72,7 @@ async function loadMonth(key,refresh=false){
 }
 function monthlyPlot(rows,field,label){
   const values=rows.map(r=>r[field]).filter(Number.isFinite);
-  if(!values.length)return card(label,'', '<p class="empty">Bu seçim için aylık veri bulunmuyor.</p>');
+  if(!values.length)return card(label,'','<p class="empty">'+(rows.some(r=>r.loading)?'TSB verileri yükleniyor…':field==='adet'?'Bu seçim için aylık poliçe sayısı alınamadı. TSB aylık Prim-Adet tablolarındaki alt branş teminat adedi farklı bir ölçüdür.':'Bu seçim için aylık prim verisi alınamadı.')+'</p>');
   const lo=Math.min(0,...values),hi=Math.max(0,...values),scale=v=>155-(v-lo)/(hi-lo||1)*125;
   const bars=rows.map((r,i)=>{
     const x=65+i*(600/rows.length),w=Math.min(32,370/rows.length);
