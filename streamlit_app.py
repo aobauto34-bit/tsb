@@ -101,14 +101,99 @@ def monthly_totals(period):
     if not premiums and candidates:
         premiums = read_totals(max(candidates, key=lambda f: f.get("CreatedDate") or ""))
     counts = {}
-    count_files = [f for f in files if f.get("PeriodYear") == month.year and
-                   f.get("PeriodMonth") == month.month and "poliçe adet" in
-                   f.get("FileName", "").lower() and f.get("FilePath", "").lower().endswith(".xlsx")]
-    if count_files:
+    from unicodedata import normalize, combining
+
+    def folded(value):
+        value = str(value or "").casefold().replace("ı", "i")
+        return " ".join("".join(c for c in normalize("NFD", value) if not combining(c))
+                        .replace("-", " ").split())
+
+    # Branch publications combine premium and count in one workbook.
+    def policy_counts(source, branch):
+        book = load_workbook(io.BytesIO(tsb_client._read(tsb_client.TSB + source["FilePath"])),
+                             read_only=True, data_only=True)
+        result = {}
         try:
-            counts = read_totals(max(count_files, key=lambda f: f.get("CreatedDate") or ""), counts=True)
+            for sheet in book:
+                rows = iter(sheet.values)
+                headers = []
+                name_cols = []
+                for row in rows:
+                    headers.append(row)
+                    labels = [folded(cell) for cell in row]
+                    name_cols = [i for i, label in enumerate(labels)
+                                 if label in {"sirket", "sirket adi", "sirket unvani", "sirketler"}]
+                    if name_cols:
+                        break
+                    if len(headers) >= 24:
+                        break
+                if not name_cols:
+                    continue
+                from itertools import islice, chain
+                extra = list(islice(rows, 5))
+                metadata = headers + [row for row in extra if not isinstance(row[name_cols[0]], str)
+                                      or not row[name_cols[0]].strip()]
+                cols = []
+                for col in range(len(headers[-1])):
+                    labels = [folded(row[col]) for row in metadata if col < len(row)]
+                    if not any(label in {"police adedi", "police sayisi", "yazilan police adedi",
+                                         "toplam police adedi", "police adet"} for label in labels):
+                        continue
+                    # Merged period headers apply until the next period starts.
+                    periods = [str(cell).strip() for row in metadata for cell in row[:col+1]
+                               if isinstance(cell, str) and len(cell.strip()) == 7
+                               and cell.strip()[4] == "-" and cell.strip()[:4].isdigit()]
+                    if periods and periods[-1] != period:
+                        continue
+                    cols.append(col)
+                if len(cols) != 1:
+                    continue
+                company_col, value_col = name_cols[0], cols[0]
+                companies = {}
+                for row in chain(extra, rows):
+                    if max(company_col, value_col) >= len(row):
+                        continue
+                    name, value = row[company_col], row[value_col]
+                    if not isinstance(name, str) or not isinstance(value, (float, int)) or int(value) != value:
+                        continue
+                    name = name.strip()
+                    if folded(name) in {"toplam", "genel toplam", "sektor toplami"}:
+                        name = "SEKTÖR TOPLAMI"
+                    if name in companies:
+                        companies = {}
+                        break
+                    companies[name] = int(value)
+                target = branch or sheet.title
+                if companies and "SEKTÖR TOPLAMI" in companies:
+                    # Only take a branch total from its own sheet or an explicit company summary.
+                    if branch and folded(sheet.title) not in {folded(branch), "genel toplam", "ozet", "sirket bazinda", "toplam"}:
+                        continue
+                    result[target] = companies
+            return result
+        finally:
+            book.close()
+
+    sources = {}
+    for file in files:
+        if (file.get("PeriodYear"), file.get("PeriodMonth")) != (month.year, month.month):
+            continue
+        title = folded(file.get("FileName"))
+        if not file.get("FilePath", "").lower().endswith(".xlsx"):
+            continue
+        if "police adet" in title:
+            branch = None
+        elif "prim" in title and "adet" in title and ("kasko" in title or "trafik" in title):
+            branch = "Kasko" if "kasko" in title else "Trafik"
+        else:
+            continue
+        if branch not in sources or file.get("CreatedDate", "") > sources[branch].get("CreatedDate", ""):
+            sources[branch] = file
+    for branch, source in sources.items():
+        try:
+            for key, values in policy_counts(source, branch).items():
+                counts.setdefault(key, {}).update(values)
         except Exception:
-            logging.getLogger(__name__).exception("TSB aylık poliçe adedi %s", period)
+            logging.getLogger(__name__).exception("TSB adet dosyası %s", source.get("FileName"))
     return dict(premiums=premiums, counts=counts)
 
 
