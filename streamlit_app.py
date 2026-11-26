@@ -109,106 +109,55 @@ def monthly_totals(period):
                         .replace("-", " ").split())
 
     import re
-    branch_names = {folded(name): name for name in saved["tables"]}
-    branch_names.update({"hayat disi": "Hayatdışı", "zorunlu trafik": "Trafik",
-                         "zorunlu trafik sigortasi": "Trafik", "kara araclari kaskosu": "Kasko"})
-    known_companies = {folded(row[0]): row[0] for rows in saved["tables"].values() for row in rows}
-    known_companies.update({folded(name): name for rows in premiums.values() for name in rows})
-    known_companies.update({label: "SEKTÖR TOPLAMI" for label in ("toplam", "sektor toplami", "genel toplam")})
-
-    import math
-    def coverage_number(value):
-        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-
-    branch_names.update({"hayat disi branslar": "Hayatdışı", "hayat branslari": "Hayat",
-                         "motorlu kara tasitlari kasko": "Kasko",
-                         "zorunlu trafik (yesil kart haric)": "Trafik", "genel toplam": "Genel Toplam"})
-    def branch_label(value):
-        label = " ".join(folded(value).replace("–", " ").replace("—", " ").split())
-        return branch_names.get(label) or branch_names.get(label.removesuffix(" toplam"))
-
     def read_coverage(source):
+        import math
+        from calendar import monthrange
         content = tsb_client._read(tsb_client.TSB + source["FilePath"])
-        book = load_workbook(io.BytesIO(content), data_only=True)
+        book = load_workbook(io.BytesIO(content), data_only=True, read_only=True)
+        last = month.replace(day=monthrange(month.year, month.month)[1])
+        expected = f"01.01.{month.year}-{last:%d.%m.%Y}"
         try:
             for sheet in book:
-                rows = list(sheet.values)
-                if not rows:
+                branch = sheet.title.strip()
+                if branch not in saved["tables"]:
                     continue
-                width = len(rows[0])
-                # Expand only the header ranges explicitly merged by TSB.
-                header = [list(row) for row in rows[:30]]
-                for area in sheet.merged_cells.ranges:
-                    if area.min_row > len(header):
-                        continue
-                    value = sheet.cell(area.min_row, area.min_col).value
-                    for r in range(area.min_row-1, min(area.max_row, len(header))):
-                        for c in range(area.min_col-1, area.max_col):
-                            header[r][c] = value
-                # Some sheets put branches down the rows and companies across the columns.
-                for idx,row in enumerate(rows):
-                    branch = next((b for cell in row[:4] if isinstance(cell,str)
-                                   and (b := branch_label(cell))), None)
-                    if not branch or not any(coverage_number(v) for v in row):
-                        continue
-                    by_company = {}
-                    for col,value in enumerate(row):
-                        if not coverage_number(value):
-                            continue
-                        labels = [folded(h[col]) for h in header[:idx] if isinstance(h[col],str)]
-                        measures = [label for label in labels if "sigortali" in label or
-                                    ("teminat" in label and ("adet" in label or "adedi" in label))]
-                        if not measures or "sigortali" in measures[-1]:
-                            continue
-                        company = next((known_companies[l] for l in reversed(labels)
-                                        if l in known_companies and known_companies[l]!="SEKTÖR TOPLAMI"), None)
-                        if not company and folded(sheet.title)=="genel":
-                            company = "SEKTÖR TOPLAMI"
-                        if company:
-                            by_company.setdefault(company, []).append(value)
-                    for company, numbers in by_company.items():
-                        if len(numbers)==1:
-                            counts.setdefault(branch, {})[company] = numbers[0]
-                name_col = next((c for row in header for c, cell in enumerate(row[:5])
-                                 if folded(cell) in {"sirket adi", "sirket unvani", "sirket", "sirketler"}), None)
-                first = next((i for i,row in enumerate(rows)
-                              if (any(folded(x) in known_companies for x in row[:4] if isinstance(x,str)) or
-                                  (name_col is not None and isinstance(row[name_col], str) and isinstance(row[0], int)))
-                              and any(isinstance(x,(int,float)) for x in row[1:])), None)
-                if first is None:
+                rows = iter(sheet.values)
+                first = [next(rows, ()) for _ in range(6)]
+                if not first[2] or str(first[2][0]).replace(" ", "") != expected:
                     continue
-                columns = {}
-                for col in range(width):
-                    labels = [folded(row[col]) for row in header[:first] if row[col] is not None]
-                    if not any('teminat' in label and ('adet' in label or 'adedi' in label) for label in labels):
+                labels = [folded(cell) for cell in first[5]]
+                if labels[:3] != ["sirket adi", "sirket kodu", "sirket tipi"]:
+                    continue
+                data_cols = [i for i in range(3,len(labels)) if labels[i]]
+                totals = [i for i in data_cols if "toplam" in labels[i] and
+                          ("teminat adedi" in labels[i] or labels[i].endswith(" toplam"))]
+                if totals:
+                    cols = [totals[-1]]
+                elif len(data_cols) == 1:
+                    cols = data_cols
+                elif branch == "Hayat":
+                    cols = [i for i in data_cols if "alt brans teminat adedi" in labels[i]]
+                else:
+                    continue
+                if not cols:
+                    continue
+                companies = {}
+                for row in rows:
+                    name, code, kind = row[:3]
+                    if not isinstance(name, str) or not isinstance(code, int):
                         continue
-                    if any('sigortali' in label or 'pay' in label or '%' in label for label in labels):
+                    if code == 9003:
+                        name = "SEKTÖR TOPLAMI"
+                    elif str(kind).startswith("T ("):
                         continue
-                    periods = [str(row[col]).strip() for row in header[:first]
-                               if re.fullmatch(r"20\d{2}-\d{2}", str(row[col]).strip())]
-                    if periods and period not in periods:
-                        continue
-                    branch = next((branch_names[label] for label in reversed(labels) if label in branch_names),
-                                  branch_names.get(folded(sheet.title)))
-                    if branch:
-                        columns.setdefault(branch, []).append(col)
-                for branch, cols in columns.items():
-                    if len(cols) != 1:
-                        continue
-                    values = {}
-                    for row in rows[first:]:
-                        company = next((known_companies[folded(x)] for x in row[:4]
-                                        if isinstance(x,str) and folded(x) in known_companies), None)
-                        if not company and name_col is not None and isinstance(row[name_col], str) and isinstance(row[0], int):
-                            company = row[name_col].strip()
-                        value = row[cols[0]]
-                        if company and coverage_number(value):
-                            if company in values and values[company]!=value:
-                                values = {}
-                                break
-                            values[company] = value
-                    if values:
-                        counts.setdefault(branch, {}).update(values)
+                    values = [row[i] for i in cols]
+                    if all(isinstance(v,(int,float)) and math.isfinite(v) for v in values):
+                        companies[name.strip()] = sum(values)
+                if companies:
+                    counts[branch] = companies
+            life, nonlife = counts.get("Hayat", {}), counts.get("Hayatdışı", {})
+            if life and nonlife:
+                counts["Genel Toplam"] = {n: life[n]+nonlife[n] for n in life.keys() & nonlife.keys()}
         finally:
             book.close()
 
