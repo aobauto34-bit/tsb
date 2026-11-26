@@ -99,5 +99,19 @@ dashboard = st.components.v2.component("sigorta_pusula", html='''
   <div id="app"><div class="boot"><h1>Sigorta Pusula</h1><p>TSB verileri hazırlanıyor…</p></div></div>
   <div id="toast" role="status" aria-live="polite"></div>
 ''', css=css, js=js, isolate_styles=True)
-dashboard(key="pusula", data=dict(bootstrap=bootstrap(), reply=st.session_state.get("reply")),
-    on_request_change=receive_request, height="content")
+monthly = json.loads((ROOT / "data/monthly.json").read_text("utf-8"))
+production, financial = st.tabs(["Aylık prim üretimi", "Üç aylık mali ve teknik göstergeler"])
+with production:
+    st.subheader(f"Yılbaşından {monthly['period']} sonuna kadar prim üretimi")
+    branch = st.selectbox("Branş veya sektör", monthly["tables"].keys())
+    table = []
+    for company, premium, prior, growth, share in monthly["tables"][branch]:
+        percent = lambda value: None if not isinstance(value, (int, float)) else round(value * 100, 4)
+        table.append({"Şirket": company, "Üretim (TL)": premium,
+                      "Geçen yıl aynı dönem (TL)": prior, "Büyüme (%)": percent(growth),
+                      "Pazar payı (%)": percent(share)})
+    st.dataframe(table, hide_index=True)
+    st.caption(f"TSB geçici üretim verileri · Kaynak revizyonu {monthly['source']['CreatedDate'][:10]}")
+with financial:
+    dashboard(key="pusula", data=dict(bootstrap=bootstrap(), reply=st.session_state.get("reply")),
+        on_request_change=receive_request, height="content")
