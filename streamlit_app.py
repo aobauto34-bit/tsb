@@ -20,7 +20,9 @@ def bootstrap():
         value = json.loads(path.read_text("utf-8"))
         value["status"] = "snapshot"
         data[path.stem] = value
-    return dict(periods=catalog, data=data, latest=next(p["key"] for p in catalog if p["key"] in data))
+    monthly = json.loads((ROOT / "data/monthly.json").read_text("utf-8"))
+    options = {branch: [row[0] for row in rows] for branch, rows in monthly["tables"].items()}
+    return dict(monthlyOptions=options, periods=catalog, data=data, latest=next(p["key"] for p in catalog if p["key"] in data))
 
 
 @st.cache_data(ttl=21600, max_entries=1, show_spinner=False)
@@ -41,7 +43,7 @@ def monthly_totals(period):
 
     month = date.fromisoformat(period + "-01")
     saved = json.loads((ROOT / "data/monthly.json").read_text("utf-8"))
-    premiums = {name: rows[0][1] for name, rows in saved["tables"].items()} if saved["period"] == period else {}
+    premiums = {name: {r[0]: r[1] for r in rows} for name, rows in saved["tables"].items()} if saved["period"] == period else {}
     params = dict(periodYear=month.year, periodMonth=month.month,
                   statisticCategoryId=1, statisticSubCategoryId=1, statisticPeriodId=0)
     files = []
@@ -74,14 +76,24 @@ def monthly_totals(period):
                 if not columns:
                     continue
                 col = columns[0]
+                name_col = next((i for row in headers for i, label in enumerate(row)
+                                 if str(label).strip().casefold() in {"şirket adı", "şirket ünvanı", "şirket unvanı", "şirket"}), None)
+                if name_col is None:
+                    name_col = 1  # Company name in the TSB ranking layout.
                 from itertools import chain
+                companies = {}
                 for row in chain(headers, rows):
-                    if "SEKTÖR TOPLAMI" not in row or col >= len(row):
+                    if max(col, name_col) >= len(row):
                         continue
-                    value = row[col]
+                    name, value = row[name_col], row[col]
+                    if not isinstance(name, str) or not name.strip():
+                        continue
+                    if name.strip() != "SEKTÖR TOPLAMI" and not isinstance(row[0], int):
+                        continue
                     if isinstance(value, (float, int)) and (not counts or int(value) == value):
-                        totals[sheet.title] = value
-                    break
+                        companies[name.strip()] = value
+                if companies:
+                    totals[sheet.title] = companies
             return totals
         finally:
             book.close()
@@ -93,7 +105,10 @@ def monthly_totals(period):
                    f.get("PeriodMonth") == month.month and "poliçe adet" in
                    f.get("FileName", "").lower() and f.get("FilePath", "").lower().endswith(".xlsx")]
     if count_files:
-        counts = read_totals(max(count_files, key=lambda f: f.get("CreatedDate") or ""), counts=True)
+        try:
+            counts = read_totals(max(count_files, key=lambda f: f.get("CreatedDate") or ""), counts=True)
+        except Exception:
+            logging.getLogger(__name__).exception("TSB aylık poliçe adedi %s", period)
     return dict(premiums=premiums, counts=counts)
 
 
@@ -101,6 +116,8 @@ def api(request):
     kind = request.get("kind")
     refresh = request.get("refresh") is True
     if kind == "monthly":
+        if refresh:
+            monthly_totals.clear(request["period"])
         return monthly_totals(request["period"])
     if kind == "catalog":
         try:
