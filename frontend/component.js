@@ -214,7 +214,7 @@ function companyLines(keys,branch){
     lines+='<path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="1.8"><title>'+E(name)+'</title></path>'+points;
     legend+='<span style="display:inline-flex;align-items:center;gap:4px;margin:2px 12px 2px 0"><i style="width:12px;height:3px;background:'+color+'"></i>'+E(name)+'</span>';
   });
-  return card(title,unit,selector+'<svg class="chart" style="display:block;width:100%;max-width:720px;height:auto;max-height:220px;margin:auto" role="img" aria-label="'+title+' '+unit+'" viewBox="0 0 850 265">'+ticks+months+lines+'</svg><div style="font-size:12px">'+legend+'</div>'+peakComment(series,keys,field));
+  return card(title,unit,selector+'<svg class="chart" style="display:block;width:100%;max-width:756px;height:auto;max-height:231px;margin:auto" role="img" aria-label="'+title+' '+unit+'" viewBox="0 0 850 265">'+ticks+months+lines+'</svg><div style="font-size:12px">'+legend+'</div>'+peakComment(series,keys,field));
 }
 function productionPage(){
   const keys=monthKeys();
