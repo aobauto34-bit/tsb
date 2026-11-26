@@ -1,4 +1,5 @@
 """Run with: streamlit run streamlit_app.py (Python 3.12)."""
+import hashlib
 import copy
 import json
 import logging
@@ -144,7 +145,6 @@ def receive_request():
     st.session_state["reply"] = reply
 
 
-@st.cache_data(show_spinner=False)
 def assets():
     return ((ROOT / "frontend/component.js").read_text("utf-8"),
         (ROOT / "frontend/component.css").read_text("utf-8"))
@@ -161,7 +161,8 @@ st.html("""<style>
   @media print{[data-testid="stHeader"], [data-testid="stToolbar"]{display:none!important}
     [data-testid="stMain"]{overflow:visible!important}}
 </style>""")
-dashboard = st.components.v2.component("sigorta_pusula", html='''
+asset_version = hashlib.sha256((js + css).encode("utf-8")).hexdigest()[:16]
+dashboard = st.components.v2.component(f"sigorta_pusula_{asset_version}", html='''
   <div id="app"><div class="boot"><h1>Sigorta Pusula</h1><p>TSB verileri hazırlanıyor…</p></div></div>
   <div id="toast" role="status" aria-live="polite"></div>
 ''', css=css, js=js, isolate_styles=True)
